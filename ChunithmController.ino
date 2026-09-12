@@ -5,17 +5,37 @@
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <ADCInput.h>
+#include <Adafruit_VL53L0X.h>
 
 #define I2C_ADDRESS_1 0x37
 #define I2C_ADDRESS_2 0x38
 #define I2C_ADDRESS_3 0x39
 #define I2C_ADDRESS_4 0x3a
 
+#define SENSOR1_WIRE Wire1
+#define SENSOR2_WIRE Wire1
+#define SENSOR3_WIRE Wire1
+#define SENSOR4_WIRE Wire1
+#define SENSOR5_WIRE Wire1
+#define SENSOR6_WIRE Wire1
+
+#define SDA1_GPIO 2u
+#define SCL1_GPIO 3u
+
 #define SDA_GPIO 0u
 #define SCL_GPIO 1u
 #define REQUEST_TIMEOUT 40  //After how many request is a Timeout triggered
 
-//ADCInput ir(A0);
+// Setup mode for doing readsu
+typedef enum {
+  RUN_MODE_DEFAULT = 1,
+  RUN_MODE_ASYNC,
+  RUN_MODE_GPIO,
+  RUN_MODE_CONT
+} runmode_t;
+
+runmode_t run_mode = RUN_MODE_CONT;
+uint8_t show_command_list = 1;
 
 //Create instances of the IC
 CY8CMBR3116 touchIC_1(I2C_ADDRESS_1, REQUEST_TIMEOUT);
@@ -23,8 +43,45 @@ CY8CMBR3116 touchIC_2(I2C_ADDRESS_2, REQUEST_TIMEOUT);
 CY8CMBR3116 touchIC_3(I2C_ADDRESS_3, REQUEST_TIMEOUT);
 CY8CMBR3116 touchIC_4(I2C_ADDRESS_4, REQUEST_TIMEOUT);
 
-int irread[6] = {};
-uint8_t keys[38] = {};
+typedef struct {
+  Adafruit_VL53L0X *psensor; // pointer to object
+  TwoWire *pwire;
+  int id;            // id for the sensor
+  int shutdown_pin;  // which pin for shutdown;
+  int interrupt_pin; // which pin to use for interrupts.
+  Adafruit_VL53L0X::VL53L0X_Sense_config_t
+      sensor_config;     // options for how to use the sensor
+  uint16_t range;        // range value used in continuous mode stuff.
+  uint8_t sensor_status; // status from last ranging in continuous.
+} sensorList_t;
+Adafruit_VL53L0X sensor1;
+Adafruit_VL53L0X sensor2;
+Adafruit_VL53L0X sensor3;
+Adafruit_VL53L0X sensor4;
+Adafruit_VL53L0X sensor5;
+Adafruit_VL53L0X sensor6;
+
+sensorList_t sensors[] = {
+    {&sensor1, &SENSOR1_WIRE, 0x30, 4, 10,
+     Adafruit_VL53L0X::VL53L0X_SENSE_HIGH_SPEED, 0, 0},
+    {&sensor2, &SENSOR2_WIRE, 0x31, 5, 11,
+     Adafruit_VL53L0X::VL53L0X_SENSE_HIGH_SPEED, 0, 0},
+    {&sensor3, &SENSOR3_WIRE, 0x32, 6, 12,
+     Adafruit_VL53L0X::VL53L0X_SENSE_HIGH_SPEED, 0, 0},
+    {&sensor4, &SENSOR4_WIRE, 0x33, 7, 13,
+     Adafruit_VL53L0X::VL53L0X_SENSE_HIGH_SPEED, 0, 0},
+    {&sensor5, &SENSOR5_WIRE, 0x34, 8, 14,
+     Adafruit_VL53L0X::VL53L0X_SENSE_HIGH_SPEED, 0, 0},
+    {&sensor6, &SENSOR6_WIRE, 0x35, 9, 15,
+     Adafruit_VL53L0X::VL53L0X_SENSE_HIGH_SPEED, 0, 0}
+};
+
+const int COUNT_SENSORS = sizeof(sensors) / sizeof(sensors[0]);
+const uint16_t ALL_SENSORS_PENDING = ((1 << COUNT_SENSORS) - 1);
+uint16_t sensors_pending = ALL_SENSORS_PENDING;
+uint32_t sensor_last_cycle_time;
+
+uint8_t keys[39] = {};
 
 uint8_t hidcode[] = {
  HID_KEY_A ,
@@ -64,7 +121,8 @@ uint8_t hidcode[] = {
  HID_KEY_KEYPAD_3 ,
  HID_KEY_KEYPAD_4 ,
  HID_KEY_KEYPAD_5 ,
- HID_KEY_KEYPAD_6
+ HID_KEY_KEYPAD_6,
+ HID_KEY_KEYPAD_7
 };
 
 uint8_t const desc_hid_report[] =
@@ -87,6 +145,23 @@ void setup() {
   Serial.begin(9600);
   Wire.setClock(400000);
   Wire.begin();
+  Wire1.setSDA(SDA_GPIO);
+  Wire1.setSCL(SCL_GPIO);
+  Wire1.begin();
+  while (!Serial && millis() < 5000);
+  Serial.println(F("VL53LOX_multi start, initialize IO pins"));
+  for (int i = 0; i < COUNT_SENSORS; i++) {
+    pinMode(sensors[i].shutdown_pin, OUTPUT);
+    digitalWrite(sensors[i].shutdown_pin, LOW);
+
+    if (sensors[i].interrupt_pin >= 0)
+      pinMode(sensors[i].interrupt_pin, INPUT_PULLUP);
+  }
+  Serial.println(F("Starting..."));
+  Initialize_sensors();
+  stop_continuous_range();
+  start_continuous_range(20);
+
   Serial.println("Start Programm");
   usb_hid.setBootProtocol(HID_ITF_PROTOCOL_KEYBOARD);
   usb_hid.setPollInterval(1);
@@ -143,28 +218,12 @@ void loop() {
   //Serial.print(combinedTouchStatusBuffer[1]);
   //Serial.print(combinedTouchStatusBuffer[2]);
   //Serial.println(combinedTouchStatusBuffer[3]);
+  Process_continuous_range();
   writereport();
   send();
   delay(1);
   releaseall();
-}/*
-void loop1(){
-  for (int i = 2; i < 8; i++) {
-    digitalWrite(i,HIGH);
-    digitalWrite(i+14,HIGH);
-    delay(5);
-    int irread=ir.read();
-    if (irread>=50){
-      keys[i+30]==1;
-    }
-    delay(5);
-    digitalWrite(i,LOW);
-    digitalWrite(i+14,LOW);
-    delay(5);
-  }
-  delay(10);
 }
-*/
 void hid_report_callback(uint8_t report_id, hid_report_type_t report_type, uint8_t const* buffer, uint16_t bufsize) {
   (void) report_id;
   (void) bufsize;
@@ -254,9 +313,111 @@ void add(uint8_t key_value){
 }
 
 void writereport(){
-  for (int i = 0; i < 38; i++){
+  for (int i = 0; i < 39; i++){
     if (keys[i]==1){
       add(hidcode[i]);
     }
+  }
+}
+void Initialize_sensors() {
+  bool found_any_sensors = false;
+  // Set all shutdown pins low to shutdown sensors
+  for (int i = 0; i < COUNT_SENSORS; i++)
+    digitalWrite(sensors[i].shutdown_pin, LOW);
+  delay(20);
+
+  for (int i = 0; i < COUNT_SENSORS; i++) {
+    // one by one enable sensors and set their ID
+    digitalWrite(sensors[i].shutdown_pin, HIGH);
+    delay(10); // give time to wake up.
+    if (sensors[i].psensor->begin(sensors[i].id, false, sensors[i].pwire,
+                                  sensors[i].sensor_config)) {
+      found_any_sensors = true;
+    } else {
+      Serial.print(i, DEC);
+      Serial.print(F(": failed to start\n"));
+    }
+  }
+  if (!found_any_sensors) {
+    Serial.println("No valid sensors found");
+    while (1)
+      ;
+  }
+}
+
+void start_continuous_range(uint16_t cycle_time) {
+  if (cycle_time == 0)
+    cycle_time = 100;
+  Serial.print(F("start Continuous range mode cycle time: "));
+  Serial.println(cycle_time, DEC);
+  for (uint8_t i = 0; i < COUNT_SENSORS; i++) {
+    sensors[i].psensor->startRangeContinuous(cycle_time); // do 100ms cycle
+  }
+  sensors_pending = ALL_SENSORS_PENDING;
+  sensor_last_cycle_time = millis();
+}
+
+void stop_continuous_range() {
+  Serial.println(F("Stop Continuous range mode"));
+  for (uint8_t i = 0; i < COUNT_SENSORS; i++) {
+    sensors[i].psensor->stopRangeContinuous();
+  }
+  delay(100); // give time for it to complete.
+}
+
+void Process_continuous_range() {
+
+  if (sensors_pending == ALL_SENSORS_PENDING) {
+    for (uint8_t i = 0; i < COUNT_SENSORS; i++) {
+      keys[33 + i] = 0;
+    }
+  }
+
+  uint16_t mask = 1;
+  for (uint8_t i = 0; i < COUNT_SENSORS; i++) {
+    bool range_complete = false;
+    if (sensors_pending & mask) {
+      //if (sensors[i].interrupt_pin >= 0)
+      //  range_complete = !digitalRead(sensors[i].interrupt_pin);
+      //else
+        range_complete = sensors[i].psensor->isRangeComplete();
+      if (range_complete) {
+        sensors[i].range = sensors[i].psensor->readRangeResult();
+        sensors[i].sensor_status = sensors[i].psensor->readRangeStatus();
+        const uint16_t minimum_range = 90 + i * 20;
+        keys[33 + i] = sensors[i].sensor_status == VL53L0X_ERROR_NONE &&
+                       sensors[i].range > minimum_range &&
+                       sensors[i].range <= 230;
+        sensors_pending ^= mask;
+      }
+    }
+    mask <<= 1; // setup to test next one
+  }
+  // See if we have all of our sensors read OK
+  uint32_t delta_time = millis() - sensor_last_cycle_time;
+  if (!sensors_pending || (delta_time > 1000)) {
+    Serial.print(delta_time, DEC);
+    Serial.print(F("("));
+    Serial.print(sensors_pending, HEX);
+    Serial.print(F(")"));
+    mask = 1;
+    for (uint8_t i = 0; i < COUNT_SENSORS; i++) {
+      Serial.print(F(" : "));
+      if (sensors_pending & mask)
+        Serial.print(F("TTT")); // show timeout in this one
+      else {
+        Serial.print(sensors[i].range, DEC);
+        if (sensors[i].sensor_status == VL53L0X_ERROR_NONE)
+          Serial.print(F("  "));
+        else {
+          Serial.print(F("#"));
+          Serial.print(sensors[i].sensor_status, DEC);
+        }
+      }
+    }
+    // setup for next pass
+    Serial.println();
+    sensor_last_cycle_time = millis();
+    sensors_pending = ALL_SENSORS_PENDING;
   }
 }
