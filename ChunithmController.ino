@@ -366,6 +366,12 @@ void stop_continuous_range() {
 
 void Process_continuous_range() {
 
+  const uint16_t range_upper_bounds[6] = {110, 130, 150, 170, 190, 230};
+  if (sensors_pending == ALL_SENSORS_PENDING) {
+    for (uint8_t i = 0; i < 6; i++) {
+      keys[32 + i] = 0;
+    }
+  }
   uint16_t mask = 1;
   for (uint8_t i = 0; i < COUNT_SENSORS; i++) {
     bool range_complete = false;
@@ -377,6 +383,15 @@ void Process_continuous_range() {
       if (range_complete) {
         sensors[i].range = sensors[i].psensor->readRangeResult();
         sensors[i].sensor_status = sensors[i].psensor->readRangeStatus();
+        if (sensors[i].sensor_status == VL53L0X_ERROR_NONE &&
+            sensors[i].range > 90 && sensors[i].range <= 230) {
+          for (uint8_t range_index = 0; range_index < 6; range_index++) {
+            if (sensors[i].range <= range_upper_bounds[range_index]) {
+              keys[32 + range_index] = 1;
+              break;
+            }
+          }
+        }
         sensors_pending ^= mask;
       }
     }
