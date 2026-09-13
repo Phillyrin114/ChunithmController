@@ -81,7 +81,7 @@ const uint16_t ALL_SENSORS_PENDING = ((1 << COUNT_SENSORS) - 1);
 uint16_t sensors_pending = ALL_SENSORS_PENDING;
 uint32_t sensor_last_cycle_time;
 
-uint8_t keys[39] = {};
+uint8_t keys[38] = {};
 
 uint8_t hidcode[] = {
  HID_KEY_A ,
@@ -121,8 +121,7 @@ uint8_t hidcode[] = {
  HID_KEY_KEYPAD_3 ,
  HID_KEY_KEYPAD_4 ,
  HID_KEY_KEYPAD_5 ,
- HID_KEY_KEYPAD_6,
- HID_KEY_KEYPAD_7
+ HID_KEY_KEYPAD_6
 };
 
 uint8_t const desc_hid_report[] =
@@ -145,8 +144,8 @@ void setup() {
   Serial.begin(9600);
   Wire.setClock(400000);
   Wire.begin();
-  Wire1.setSDA(SDA_GPIO);
-  Wire1.setSCL(SCL_GPIO);
+  Wire1.setSDA(SDA1_GPIO);
+  Wire1.setSCL(SCL1_GPIO);
   Wire1.begin();
   while (!Serial && millis() < 5000);
   Serial.println(F("VL53LOX_multi start, initialize IO pins"));
@@ -218,11 +217,11 @@ void loop() {
   //Serial.print(combinedTouchStatusBuffer[1]);
   //Serial.print(combinedTouchStatusBuffer[2]);
   //Serial.println(combinedTouchStatusBuffer[3]);
-  Process_continuous_range();
   writereport();
   send();
   delay(1);
   releaseall();
+  Process_continuous_range();
 }
 void hid_report_callback(uint8_t report_id, hid_report_type_t report_type, uint8_t const* buffer, uint16_t bufsize) {
   (void) report_id;
@@ -313,7 +312,7 @@ void add(uint8_t key_value){
 }
 
 void writereport(){
-  for (int i = 0; i < 39; i++){
+  for (int i = 0; i < 38; i++){
     if (keys[i]==1){
       add(hidcode[i]);
     }
@@ -367,12 +366,6 @@ void stop_continuous_range() {
 
 void Process_continuous_range() {
 
-  if (sensors_pending == ALL_SENSORS_PENDING) {
-    for (uint8_t i = 0; i < COUNT_SENSORS; i++) {
-      keys[33 + i] = 0;
-    }
-  }
-
   uint16_t mask = 1;
   for (uint8_t i = 0; i < COUNT_SENSORS; i++) {
     bool range_complete = false;
@@ -384,10 +377,6 @@ void Process_continuous_range() {
       if (range_complete) {
         sensors[i].range = sensors[i].psensor->readRangeResult();
         sensors[i].sensor_status = sensors[i].psensor->readRangeStatus();
-        const uint16_t minimum_range = 90 + i * 20;
-        keys[33 + i] = sensors[i].sensor_status == VL53L0X_ERROR_NONE &&
-                       sensors[i].range > minimum_range &&
-                       sensors[i].range <= 230;
         sensors_pending ^= mask;
       }
     }
